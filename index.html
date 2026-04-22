@@ -95,42 +95,32 @@
             renderPosts();
         }
 
-        async function changeCat(index, newCat) {
+        function changeCat(index, newCat) {
             posts[index].cat = newCat;
+
+            // Save to local storage so it persists on refresh
+            const savedPostCats = JSON.parse(localStorage.getItem('postCategories')) || {};
+            savedPostCats[posts[index].url] = newCat;
+            localStorage.setItem('postCategories', JSON.stringify(savedPostCats));
 
             renderNav();
             if (currentFilter !== 'All') renderPosts();
-
-            try {
-                await fetch('/api/update_post', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: posts[index].url, category: newCat })
-                });
-            } catch (err) {
-                console.error("Failed to save category", err);
-            }
         }
 
-        async function createNewCategory() {
+        function createNewCategory() {
             const newCat = prompt("Enter the name for the new category:");
             if (newCat && newCat.trim() !== "") {
                 const cat = newCat.trim();
                 if (!categories.includes(cat)) {
                     categories.push(cat);
 
+                    // Save to local storage so it persists on refresh
+                    const savedCustomCategories = JSON.parse(localStorage.getItem('customCategories')) || [];
+                    savedCustomCategories.push(cat);
+                    localStorage.setItem('customCategories', JSON.stringify(savedCustomCategories));
+
                     renderNav();
                     renderPosts();
-
-                    try {
-                        await fetch('/api/add_category', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ category: cat })
-                        });
-                    } catch (err) {
-                        console.error("Failed to save new category", err);
-                    }
                 } else {
                     alert("Category already exists!");
                 }
@@ -139,24 +129,9 @@
 
         document.getElementById('search').addEventListener('input', renderPosts);
 
-        async function init() {
-            try {
-                const res = await fetch('/api/data');
-                const data = await res.json();
-                posts = data.posts;
-                const baseCategories = ["Career & Resume", "AI & Automation", "Software & Data", "Fitness & Workout", "Accounting & Business", "Food & Cooking", "Travel & Life", "Other"];
-                categories = [...new Set([...baseCategories, ...data.customCategories, ...posts.map(p => p.cat)])].filter(Boolean);
-                renderNav();
-                renderPosts();
-            } catch (err) {
-                console.error('Failed to fetch data from backend', err);
-            }
-        }
-
         // Init
         renderNav();
         renderPosts();
-        window.addEventListener('DOMContentLoaded', init);
     </script>
 
 </body>
