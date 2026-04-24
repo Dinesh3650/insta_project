@@ -1,102 +1,92 @@
-from flask import Flask, request, jsonify, send_from_directory
-import json
-import os
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import re
+import instaloader
+import requests
+from bs4 import BeautifulSoup
 
-app = Flask(__name__, static_folder='.')
+app = Flask(__name__)
+CORS(app)
 
-POSTS_FILE = 'saved_posts.json'
-HTML_FILE = 'index.html'
+def scrape_with_meta_tags(url):
+    """Fallback 2: Scrape public meta tags using advanced headers"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    }
+    try:
+        # Extract shortcode to build a direct media link for the thumbnail
+        shortcode_match = re.search(r'/(p|reel|tv)/([^/?#&]+)', url)
+        shortcode = shortcode_match.group(2) if shortcode_match else None
+        
+        # TRICK: Direct media link for thumbnail
+        direct_thumb = f"https://www.instagram.com/p/{shortcode}/media/?size=l" if shortcode else None
 
-def rebuild_html(posts):
-    """Updates the hardcoded posts array in index.html"""
-    if not os.path.exists(HTML_FILE):
-        return False
-    
-    with open(HTML_FILE, 'r', encoding='utf-8') as f:
-        content = f.read()
-    
-    # Simple regex to find let posts = [...];
-    # This works even if the array is on one massive line
-    new_data_js = f"let posts = {json.dumps(posts)};"
-    
-    # Replace the existing posts declaration
-    updated_content = re.sub(r'let posts = \[.*?\];', new_data_js, content, flags=re.DOTALL)
-    
-    with open(HTML_FILE, 'w', encoding='utf-8') as f:
-        f.write(updated_content)
-    return True
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            og_description = soup.find("meta", property="og:description")
+            og_image = soup.find("meta", property="og:image")
+            
+            return {
+                "url": url,
+                "thumb": direct_thumb or (og_image["content"] if og_image else ""),
+                "text": og_description["content"] if og_description else "Instagram Post",
+                "cat": "Other"
+            }
+        elif direct_thumb:
+            # Even if the page is blocked, the direct media link often works!
+            return {
+                "url": url,
+                "thumb": direct_thumb,
+                "text": "Instagram Post (Caption Blocked)",
+                "cat": "Other"
+            }
+    except Exception as e:
+        print(f"Fallback error: {e}")
+    return None
 
-@app.route('/')
-def index():
-    return send_from_directory('.', HTML_FILE)
-
-@app.route('/<path:path>')
-def serve_static(path):
-    return send_from_directory('.', path)
-
-@app.route('/api/add_post', methods=['POST'])
-def add_post():
+@app.route('/api/scrape_post', methods=['POST'])
+def scrape_post():
     data = request.json
     url = data.get('url')
     if not url:
         return jsonify({"status": "error", "message": "No URL provided"}), 400
 
     try:
-        # 1. Fetch metadata using instaloader
-        # We use a temporary instance to avoid login issues for public posts
-        import instaloader
+        # 1. Try with Instaloader first (best quality)
         L = instaloader.Instaloader()
+        shortcode_match = re.search(r'/(p|reel|tv)/([^/?#&]+)', url)
+        if shortcode_match:
+            shortcode = shortcode_match.group(2)
+            try:
+                # Set a shorter timeout for Instaloader to fail fast if blocked
+                post = instaloader.Post.from_shortcode(L.context, shortcode)
+                return jsonify({"status": "success", "post": {
+                    "url": url,
+                    "thumb": post.url,
+                    "text": post.caption or "",
+                    "cat": "Other"
+                }})
+            except Exception:
+                pass # Continue to fallback
+
+        # 2. Advanced Fallback
+        fallback_post = scrape_with_meta_tags(url)
+        if fallback_post:
+            return jsonify({"status": "success", "post": fallback_post})
         
-        # Extract shortcode from URL
-        # URL format: https://www.instagram.com/p/SHORTCODE/
-        shortcode_match = re.search(r'/p/([^/?#&]+)', url)
-        if not shortcode_match:
-            return jsonify({"status": "error", "message": "Invalid Instagram URL"}), 400
-        
-        shortcode = shortcode_match.group(1)
-        post = instaloader.Post.from_shortcode(L.context, shortcode)
-        
-        new_post = {
-            "url": url,
-            "thumb": post.url, # Instaloader provides the display URL (image)
-            "text": post.caption or "",
-            "cat": "Other" # Default category
-        }
+        return jsonify({"status": "error", "message": "Instagram is heavily blocking requests right now. Try again later."}), 403
 
-        # 2. Save to saved_posts.json
-        posts = []
-        if os.path.exists(POSTS_FILE):
-            with open(POSTS_FILE, 'r', encoding='utf-8') as f:
-                posts = json.load(f)
-        
-        # Check if already exists
-        if any(p['url'] == url for p in posts):
-             return jsonify({"status": "error", "message": "Post already exists"}), 400
-
-        posts.insert(0, new_post) # Add to start
-
-        with open(POSTS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(posts, f, indent=4)
-
-        # 3. Update index.html
-        rebuild_html(posts)
-
-        return jsonify({"status": "success", "post": new_post})
-
-    except ImportError:
-        return jsonify({"status": "error", "message": "instaloader not installed. Run 'pip install instaloader'"}), 500
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route('/api/data', methods=['GET'])
-def get_data():
-    posts = []
-    if os.path.exists(POSTS_FILE):
-        with open(POSTS_FILE, 'r', encoding='utf-8') as f:
-            posts = json.load(f)
-    return jsonify({"posts": posts})
+@app.route('/')
+def home():
+    return "Instagram Scraper API is running!"
 
 if __name__ == '__main__':
-    print("Dashboard Server started at http://localhost:5000")
-    app.run(debug=True, port=5000)
+    import os
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
