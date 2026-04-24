@@ -88,7 +88,7 @@
             try {
                 // 1. Scrape metadata using Cloud Backend
                 // (Using localhost for now until you deploy, but you can change it to your Render URL)
-                const BACKEND_URL = 'http://127.0.0.1:10000/api/scrape_post';
+                const BACKEND_URL = 'https://insta-scraper-api.onrender.com/api/scrape_post';
                 
                 const response = await fetch(BACKEND_URL, {
                     method: 'POST',
